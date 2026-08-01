@@ -1,9 +1,10 @@
 # quill
 
-A minimal, fully local macOS meeting recorder + transcriber. One menu-bar
+A minimal macOS meeting recorder + transcriber + summarizer. One menu-bar
 click records your mic and all system audio as two separate tracks; when you
-stop, quill transcribes both on-device and writes a speaker-tagged transcript.
-Nothing ever leaves the machine.
+stop, quill transcribes both on-device, generates an AI summary with a title,
+and routes the notes to the right folder. It can also auto-detect calls and
+prompt you to record.
 
 Named for the feather. Sibling of [parrot](https://github.com/digimata/parrot), same skeleton: single
 Swift binary, menu-bar tray, no app bundle.
@@ -41,6 +42,7 @@ Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 | `meta.json` | start/end timestamps, duration, per-track start offsets |
 | `transcript.json` | canonical transcript — engine provenance + timed, speaker-tagged segments |
 | `transcript.md` | the same transcript rendered for reading |
+| `summary.md` | AI-generated title, key points, decisions, and action items |
 | `transcribe.log` | transcription progress/errors for this session |
 
 Two tracks on purpose: speech models do better on clean single-source audio,
@@ -68,6 +70,41 @@ on next launch (the filesystem is the queue: a session with `meta.json` but no
 The engine sits behind a small protocol; a Whisper engine (WhisperKit
 large-v3-turbo) is planned as the fallback / re-transcription option.
 
+## Summary & folder routing
+
+When enabled, quill sends the finished transcript to the **Claude API** to
+generate:
+
+- **Title** — a short descriptive name for the call
+- **Summary** — key points, decisions, and action items in markdown
+- **Folder classification** — which subfolder in your notes directory the call
+  belongs to, matched against existing folder names (projects, companies, etc.)
+
+The transcript and summary are written as separate files into the matched
+subfolder. If no folder matches, they land in `Uncategorized/`. Point
+`notes_dir` at a folder that syncs to Google Drive (or Dropbox, iCloud, etc.)
+and your meeting notes are automatically available everywhere.
+
+Output in the notes folder:
+
+```
+~/Desktop/Notes/Acme Corp/2026.08.01 — Sprint Planning — Transcript.md
+~/Desktop/Notes/Acme Corp/2026.08.01 — Sprint Planning — Summary.md
+```
+
+## Auto-detect calls
+
+quill can watch for active meeting apps and prompt you to record when a call
+starts. When enabled, it polls for apps like **Zoom**, **Google Meet**,
+**Microsoft Teams**, **Slack**, **FaceTime**, **Discord**, and **Webex** that
+are actively producing audio.
+
+When a call is detected, a confirmation dialog appears: *"Call detected —
+Zoom. Start recording?"* with Record and Dismiss buttons. The dialog
+auto-dismisses after 10 seconds if you don't respond. If you approve,
+recording starts immediately and auto-stops when the call goes silent for the
+configured timeout (default 30 seconds).
+
 ## Config
 
 Optional, at `~/.config/quill/config.json`:
@@ -75,14 +112,31 @@ Optional, at `~/.config/quill/config.json`:
 ```json
 {
   "recordings_dir": "~/Recordings",
+  "notes_dir": "~/Desktop/Notes",
   "transcription": { "enabled": true, "engine": "parakeet" },
+  "summary": { "enabled": true, "api_key": "sk-ant-...", "model": "claude-sonnet-4-20250514" },
+  "auto_record": { "enabled": true, "apps": ["zoom", "meet", "teams"], "silence_timeout_s": 30 },
   "on_stop": "my-hook"
 }
 ```
 
 - `recordings_dir` — where sessions land. Resolution order: `--out` flag >
   config > `~/Recordings`.
+- `notes_dir` — directory containing subfolders for projects/companies.
+  Transcripts and summaries are routed here after AI classification. Point it
+  at a Google Drive / Dropbox sync folder for automatic cloud access.
 - `transcription.enabled` — set `false` to just record.
+- `summary.enabled` — generate AI title + summary after transcription (default
+  off). Requires an API key.
+- `summary.api_key` — Claude API key. Also reads from `ANTHROPIC_API_KEY` env
+  var.
+- `summary.model` — Claude model to use (default `claude-sonnet-4-20250514`).
+- `auto_record.enabled` — watch for meeting apps and prompt to record (default
+  off).
+- `auto_record.apps` — which apps to watch. Default:
+  `["zoom", "meet", "teams", "slack", "facetime", "discord", "webex"]`.
+- `auto_record.silence_timeout_s` — seconds of silence before auto-stopping
+  (default 30).
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't
   bleed into the mic track and get transcribed twice as "me". The trade: while
@@ -90,9 +144,8 @@ Optional, at `~/.config/quill/config.json`:
   is configured, but it can't be zeroed). On headphones there's no echo to
   cancel, so raw capture is the better default.
 - `on_stop` — shell command spawned with the session directory as its
-  argument, **after the transcript is written** (or right after recording if
-  transcription is disabled). Wire it to whatever comes next: summarization,
-  filing, indexing.
+  argument, **after the transcript and summary are written** (or right after
+  recording if transcription is disabled). Wire it to whatever comes next.
 
 ## CLI
 
@@ -112,6 +165,7 @@ quill install --uninstall
 - **AVAudioEngine** — mic capture
 - **AVAudioFile** — streaming AAC encode into CAF
 - **FluidAudio / Parakeet** — on-device Core ML transcription
+- **Claude API** — AI-powered summary, title generation, and folder classification
 - **NSStatusItem** — the whole UI
 
 ## Gotchas
