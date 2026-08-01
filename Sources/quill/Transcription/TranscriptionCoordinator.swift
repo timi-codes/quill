@@ -17,6 +17,7 @@ actor TranscriptionCoordinator {
     private var queue: [URL] = []
     private var draining = false
     private var engine: TranscriptionEngine?
+    private var summaryEngine: SummaryEngine?
     private var lastFailure: String?
     private var statusHandler: (@Sendable (Status) -> Void)?
 
@@ -78,6 +79,10 @@ actor TranscriptionCoordinator {
             do {
                 try await transcribe(dir)
                 notifyUser(title: "quill — transcript ready", body: dir.lastPathComponent)
+
+                // Post-transcription: summarize, classify, and route files.
+                await summarizeAndRoute(dir)
+
                 runHook(for: dir)
             } catch {
                 log(dir, "transcription failed: \(error)")
@@ -179,6 +184,128 @@ actor TranscriptionCoordinator {
         } else {
             try? Data(line.utf8).write(to: url)
         }
+    }
+
+    // MARK: - Summary & routing
+
+    /// After transcription, use Claude to generate a title + summary, then
+    /// route transcript.md and summary.md into the appropriate notes subfolder.
+    private func summarizeAndRoute(_ dir: URL) async {
+        guard Config.summaryEnabled() else { return }
+
+        // Read the transcript we just wrote.
+        let transcriptURL = dir.appendingPathComponent("transcript.md")
+        guard let transcriptData = try? Data(contentsOf: transcriptURL),
+              let transcript = String(data: transcriptData, encoding: .utf8),
+              !transcript.isEmpty
+        else {
+            log(dir, "summary skipped — no transcript.md")
+            return
+        }
+
+        // Discover existing folders in the notes directory.
+        let existingFolders = listNotesFolders()
+
+        // Run AI.
+        let result: SummaryResult
+        do {
+            let engine = try prepareSummaryEngine()
+            result = try await engine.process(
+                transcript: transcript,
+                existingFolders: existingFolders
+            )
+            log(dir, "summary generated — title: \(result.title), folder: \(result.folder ?? "none")")
+        } catch {
+            log(dir, "summary failed: \(error)")
+            notifyUser(title: "quill — summary failed", body: "\(error)")
+            return
+        }
+
+        // Write summary.md into the session directory.
+        let summaryContent = "# \(result.title)\n\n\(result.summary)\n"
+        try? Data(summaryContent.utf8).write(
+            to: dir.appendingPathComponent("summary.md"),
+            options: .atomic
+        )
+
+        // Update meta.json with the title.
+        updateMetaTitle(dir: dir, title: result.title)
+
+        // Route files to notes directory if configured.
+        guard let notesRoot = Config.notesDir() else { return }
+        let targetFolder: URL
+        if let folder = result.folder {
+            targetFolder = notesRoot.appendingPathComponent(folder, isDirectory: true)
+        } else {
+            targetFolder = notesRoot.appendingPathComponent("Uncategorized", isDirectory: true)
+        }
+
+        let fm = FileManager.default
+        try? fm.createDirectory(at: targetFolder, withIntermediateDirectories: true)
+
+        // File name: "2026.08.01 — Sprint Planning"
+        let datePrefix = dir.lastPathComponent.prefix(10) // yyyy.MM.dd
+        let safeName = "\(datePrefix) — \(sanitize(result.title))"
+
+        // Copy transcript and summary as separate files.
+        let destTranscript = targetFolder.appendingPathComponent("\(safeName) — Transcript.md")
+        let destSummary = targetFolder.appendingPathComponent("\(safeName) — Summary.md")
+
+        try? fm.copyItem(at: transcriptURL, to: destTranscript)
+        try? Data(summaryContent.utf8).write(to: destSummary, options: .atomic)
+
+        log(dir, "routed to \(targetFolder.path)")
+        notifyUser(
+            title: "quill — \(result.title)",
+            body: "Filed to \(result.folder ?? "Uncategorized")"
+        )
+    }
+
+    private func prepareSummaryEngine() throws -> SummaryEngine {
+        if let engine = summaryEngine { return engine }
+        let engine = try ClaudeSummaryEngine()
+        summaryEngine = engine
+        return engine
+    }
+
+    private func listNotesFolders() -> [String] {
+        guard let notesRoot = Config.notesDir() else { return [] }
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: notesRoot,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return [] }
+        return entries.compactMap { url in
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
+                return nil
+            }
+            let name = url.lastPathComponent
+            // Skip hidden folders and Uncategorized (our own fallback).
+            return name.hasPrefix(".") ? nil : name
+        }.sorted()
+    }
+
+    private func updateMetaTitle(dir: URL, title: String) {
+        let metaURL = dir.appendingPathComponent("meta.json")
+        guard
+            let data = try? Data(contentsOf: metaURL),
+            var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        json["title"] = title
+        if let updated = try? JSONSerialization.data(
+            withJSONObject: json,
+            options: [.prettyPrinted, .sortedKeys]
+        ) {
+            try? updated.write(to: metaURL, options: .atomic)
+        }
+    }
+
+    /// Strip characters that are problematic in filenames.
+    private func sanitize(_ name: String) -> String {
+        let illegal = CharacterSet(charactersIn: "/\\:*?\"<>|")
+        return name.components(separatedBy: illegal).joined(separator: "-")
+            .trimmingCharacters(in: .whitespaces)
     }
 
     private func publish(_ status: Status) {

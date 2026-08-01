@@ -81,6 +81,7 @@ final class AppController {
     private let root: URL
     private let menuBar = MenuBarController()
     private let transcription = TranscriptionCoordinator()
+    private let callMonitor = CallMonitor()
     private var session: RecordingSession?
     private var ticker: Timer?
 
@@ -90,6 +91,16 @@ final class AppController {
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
         menuBar.update(recording: false, elapsed: nil)
+
+        callMonitor.onCallDetected = { [weak self] app in
+            guard let self, self.session == nil else { return }
+            self.promptToRecord(app: app)
+        }
+        callMonitor.onCallEnded = { [weak self] in
+            guard let self, self.session != nil else { return }
+            self.stopSession()
+        }
+        callMonitor.start()
 
         Task { [transcription, root] in
             await transcription.setStatusHandler { status in
@@ -103,6 +114,7 @@ final class AppController {
 
     /// Stop any live session cleanly (finalizing files) and exit.
     func shutdown() {
+        callMonitor.stop()
         stopSession()
         NSApp.terminate(nil)
     }
@@ -168,6 +180,36 @@ final class AppController {
             recording: true,
             elapsed: Self.format(Date().timeIntervalSince(session.startedAt))
         )
+    }
+
+    private func promptToRecord(app: String) {
+        let displayName = app.prefix(1).uppercased() + app.dropFirst()
+        let alert = NSAlert()
+        alert.messageText = "Call detected — \(displayName)"
+        alert.informativeText = "quill detected an active \(displayName) call. Start recording?"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Record")
+        alert.addButton(withTitle: "Dismiss")
+
+        // Auto-dismiss after 10 seconds if no response.
+        let autoCloseTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                // If the alert is still showing, treat as dismiss.
+                if alert.window.isVisible {
+                    NSApp.abortModal()
+                }
+            }
+        }
+
+        let response = alert.runModal()
+        autoCloseTimer.invalidate()
+
+        if response == .alertFirstButtonReturn {
+            callMonitor.userApproved()
+            startSession()
+        } else {
+            callMonitor.userDismissed()
+        }
     }
 
     private func openFolder() {

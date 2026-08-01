@@ -48,6 +48,63 @@ enum Config {
         load()?["transcription"] as? [String: Any]
     }
 
+    // MARK: - Summary
+
+    /// Whether summaries are generated after transcription. Default off (needs
+    /// an API key to do anything).
+    static func summaryEnabled() -> Bool {
+        summary()?["enabled"] as? Bool ?? false
+    }
+
+    /// Claude API key for summary generation. Falls back to ANTHROPIC_API_KEY
+    /// environment variable.
+    static func summaryAPIKey() -> String? {
+        if let key = summary()?["api_key"] as? String, !key.isEmpty { return key }
+        if let env = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"], !env.isEmpty { return env }
+        return nil
+    }
+
+    /// Claude model to use for summaries. Defaults to claude-sonnet-4-20250514.
+    static func summaryModel() -> String {
+        summary()?["model"] as? String ?? "claude-sonnet-4-20250514"
+    }
+
+    private static func summary() -> [String: Any]? {
+        load()?["summary"] as? [String: Any]
+    }
+
+    // MARK: - Notes directory
+
+    /// Directory containing subfolders for projects/companies. Transcripts and
+    /// summaries are routed here after AI classification.
+    static func notesDir() -> URL? {
+        guard let dir = load()?["notes_dir"] as? String, !dir.isEmpty else { return nil }
+        return URL(fileURLWithPath: (dir as NSString).expandingTildeInPath, isDirectory: true)
+    }
+
+    // MARK: - Auto-record
+
+    static func autoRecordEnabled() -> Bool {
+        autoRecord()?["enabled"] as? Bool ?? false
+    }
+
+    /// Apps to watch for active calls. Default set covers the major players.
+    static func autoRecordApps() -> [String] {
+        autoRecord()?["apps"] as? [String]
+            ?? ["zoom", "meet", "teams", "slack", "facetime", "discord", "webex"]
+    }
+
+    /// Seconds of silence before auto-stopping. Default 30.
+    static func autoRecordSilenceTimeout() -> Int {
+        autoRecord()?["silence_timeout_s"] as? Int ?? 30
+    }
+
+    private static func autoRecord() -> [String: Any]? {
+        load()?["auto_record"] as? [String: Any]
+    }
+
+    // MARK: - Mic
+
     /// Apple voice processing (acoustic echo cancellation) on the mic, so
     /// speaker playback doesn't bleed into the mic track and get transcribed
     /// as "me". Default off — the live voice unit ducks all other playback,
