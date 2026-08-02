@@ -49,7 +49,7 @@ struct ClaudeSummaryEngine: SummaryEngine {
         }
 
         let systemPrompt = """
-        You are an assistant that processes meeting transcripts. You will be given a transcript and a list of project/context folders with their descriptions (from about.md files).
+        You are an assistant that processes meeting transcripts. You will be given a transcript and a list of project/context folders with their descriptions (from context.md files).
 
         Respond with ONLY valid JSON (no markdown fences, no extra text) in this exact format:
         {
@@ -67,10 +67,10 @@ struct ClaudeSummaryEngine: SummaryEngine {
         - Use markdown with headers: ## Key Points, ## Decisions, ## Action Items
         - Be concise but capture all important information
         - Use bullet points
-        - Use the project context from the about.md to write a more informed and relevant summary — reference project-specific terminology, goals, and people where appropriate
+        - Use the project context from the context.md to write a more informed and relevant summary — reference project-specific terminology, goals, and people where appropriate
 
         Rules for folder classification:
-        - Read each folder's about.md description carefully
+        - Read each folder's context.md description carefully
         - Match the meeting's content (topics discussed, people mentioned, project context) against the folder descriptions
         - Pick the folder that best matches the meeting's context
         - Only pick a folder if you are reasonably confident it matches

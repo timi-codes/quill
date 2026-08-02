@@ -245,7 +245,7 @@ actor TranscriptionCoordinator {
             return
         }
 
-        // Discover existing folders and read their about.md for context.
+        // Discover existing folders and read their context.md for context.
         let folderContexts = loadFolderContexts()
 
         // Run AI.
@@ -312,7 +312,7 @@ actor TranscriptionCoordinator {
         return engine
     }
 
-    /// Load folder names and their about.md contents from the notes directory.
+    /// Load folder names and their context.md contents from the notes directory.
     private func loadFolderContexts() -> [FolderContext] {
         guard let notesRoot = Config.notesDir() else { return [] }
         let fm = FileManager.default
@@ -328,8 +328,8 @@ actor TranscriptionCoordinator {
             let name = url.lastPathComponent
             guard !name.hasPrefix(".") else { return nil }
 
-            // Read about.md if it exists.
-            let aboutURL = url.appendingPathComponent("about.md")
+            // Read context.md if it exists.
+            let aboutURL = url.appendingPathComponent("context.md")
             let about = try? String(contentsOf: aboutURL, encoding: .utf8)
 
             return FolderContext(name: name, about: about)
