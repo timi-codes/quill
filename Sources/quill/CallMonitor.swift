@@ -21,7 +21,14 @@ final class CallMonitor {
     private(set) var approved = false
     private var prompted = false
     private var silentSince: Date?
+    /// When we first saw a potential call — we wait for sustained audio
+    /// before prompting to filter out notification dings.
+    private var audioDetectedSince: Date?
+    private var pendingApp: String?
     private let silenceTimeout: TimeInterval
+
+    /// Seconds of continuous audio before we consider it a real call.
+    private static let audioConfirmationDelay: TimeInterval = 15
 
     /// Process path fragments and display-friendly tags for known meeting apps.
     /// We match against the executable path of audio-producing processes.
@@ -85,6 +92,8 @@ final class CallMonitor {
         approved = false
         prompted = false
         silentSince = nil
+        pendingApp = nil
+        audioDetectedSince = nil
     }
 
     private func poll(configuredApps: Set<String>) {
@@ -122,25 +131,43 @@ final class CallMonitor {
         if let detected {
             silentSince = nil
             if activeApp == nil && !prompted {
-                activeApp = detected
-                FileHandle.standardError.write(Data(
-                    "call detected: \(detected) — prompting user\n".utf8
-                ))
-                onCallDetected?(detected)
-                prompted = true
+                if pendingApp == detected, let since = audioDetectedSince {
+                    // Audio has been sustained — check if long enough.
+                    if Date().timeIntervalSince(since) >= Self.audioConfirmationDelay {
+                        activeApp = detected
+                        pendingApp = nil
+                        audioDetectedSince = nil
+                        FileHandle.standardError.write(Data(
+                            "call confirmed: \(detected) — prompting user\n".utf8
+                        ))
+                        onCallDetected?(detected)
+                        prompted = true
+                    }
+                } else {
+                    // First detection — start the confirmation timer.
+                    pendingApp = detected
+                    audioDetectedSince = Date()
+                }
             }
-        } else if activeApp != nil {
-            if silentSince == nil {
-                silentSince = Date()
+        } else {
+            // Audio stopped — reset pending detection (was just a ding).
+            if pendingApp != nil {
+                pendingApp = nil
+                audioDetectedSince = nil
             }
-            if let silentSince, Date().timeIntervalSince(silentSince) >= silenceTimeout {
-                FileHandle.standardError.write(Data(
-                    "call ended: \(activeApp!) silent for \(Int(silenceTimeout))s\n".utf8
-                ))
-                let wasApproved = approved
-                resetState()
-                if wasApproved {
-                    onCallEnded?()
+            if activeApp != nil {
+                if silentSince == nil {
+                    silentSince = Date()
+                }
+                if let silentSince, Date().timeIntervalSince(silentSince) >= silenceTimeout {
+                    FileHandle.standardError.write(Data(
+                        "call ended: \(activeApp!) silent for \(Int(silenceTimeout))s\n".utf8
+                    ))
+                    let wasApproved = approved
+                    resetState()
+                    if wasApproved {
+                        onCallEnded?()
+                    }
                 }
             }
         }
