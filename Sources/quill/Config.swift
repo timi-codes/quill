@@ -64,9 +64,9 @@ enum Config {
         return nil
     }
 
-    /// Claude model to use for summaries. Defaults to claude-sonnet-4-20250514.
+    /// Claude model to use for summaries. Defaults to claude-sonnet-4-6.
     static func summaryModel() -> String {
-        summary()?["model"] as? String ?? "claude-sonnet-4-20250514"
+        summary()?["model"] as? String ?? "claude-sonnet-4-6"
     }
 
     private static func summary() -> [String: Any]? {

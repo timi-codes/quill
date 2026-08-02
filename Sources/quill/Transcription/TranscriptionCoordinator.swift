@@ -17,6 +17,7 @@ actor TranscriptionCoordinator {
     private var queue: [URL] = []
     private var draining = false
     private var engine: TranscriptionEngine?
+    private var diarizer: SpeakerDiarizer?
     private var summaryEngine: SummaryEngine?
     private var lastFailure: String?
     private var statusHandler: (@Sendable (Status) -> Void)?
@@ -95,6 +96,8 @@ actor TranscriptionCoordinator {
         }
         await engine?.release()
         engine = nil
+        diarizer?.release()
+        diarizer = nil
         publish(lastFailure.map { .failed(session: $0) } ?? .idle)
         draining = false
         // An enqueue that landed between the loop exiting and the release
@@ -114,8 +117,6 @@ actor TranscriptionCoordinator {
                 continue
             }
             log(dir, "transcribing \(track.file) (\(engine.name))")
-            // One bad track (empty, truncated) shouldn't cost us the other's
-            // transcript — log it and keep going.
             let segments: [TranscriptSegment]
             do {
                 segments = try await engine.transcribe(audio)
@@ -123,13 +124,30 @@ actor TranscriptionCoordinator {
                 log(dir, "skipping \(track.file): \(error)")
                 continue
             }
-            let offset = TimeInterval(track.offsetMs) / 1000
-            merged += segments.map {
-                Transcript.Segment(
-                    speaker: track.speaker,
-                    start_ms: Int(($0.start + offset) * 1000),
-                    end_ms: Int(($0.end + offset) * 1000),
-                    text: $0.text
+
+            // Run speaker diarization on this track to identify individual
+            // speakers within it (e.g. when the other person's voice bleeds
+            // into the mic track).
+            let diarSegments = await diarizeTrack(audio, dir: dir, trackFile: track.file)
+            let labelMap = SpeakerAssigner.relabel(
+                segments: diarSegments,
+                trackLabel: track.speaker
+            )
+
+            let assigned = SpeakerAssigner.assign(
+                transcriptSegments: segments.map { ($0.start, $0.end, $0.text) },
+                diarization: diarSegments,
+                trackLabel: track.speaker,
+                offsetMs: track.offsetMs
+            )
+
+            merged += assigned.map { seg in
+                let speaker = labelMap[seg.speaker] ?? seg.speaker
+                return Transcript.Segment(
+                    speaker: speaker,
+                    start_ms: seg.startMs,
+                    end_ms: seg.endMs,
+                    text: seg.text
                 )
             }
         }
@@ -143,6 +161,30 @@ actor TranscriptionCoordinator {
         )
         try transcript.write(to: dir)
         log(dir, "done — \(merged.count) segments")
+    }
+
+    /// Best-effort diarization — returns empty on failure so transcription
+    /// still works with the original me/them labels.
+    private func diarizeTrack(_ audio: URL, dir: URL, trackFile: String) async -> [SpeakerSegment] {
+        do {
+            let diar = try await preparedDiarizer()
+            log(dir, "diarizing \(trackFile)")
+            let segments = try await diar.diarize(audio)
+            let speakerCount = Set(segments.map(\.speaker)).count
+            log(dir, "diarization found \(speakerCount) speaker(s) in \(trackFile)")
+            return segments
+        } catch {
+            log(dir, "diarization skipped for \(trackFile): \(error)")
+            return []
+        }
+    }
+
+    private func preparedDiarizer() async throws -> SpeakerDiarizer {
+        if let diarizer { return diarizer }
+        let diar = SpeakerDiarizer()
+        try await diar.prepare()
+        diarizer = diar
+        return diar
     }
 
     private func preparedEngine() async throws -> TranscriptionEngine {
