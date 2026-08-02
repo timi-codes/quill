@@ -275,33 +275,38 @@ actor TranscriptionCoordinator {
 
         // Route files to notes directory if configured.
         guard let notesRoot = Config.notesDir() else { return }
-        let projectFolder: URL
+        let fm = FileManager.default
+        let safeTitle = sanitize(result.title)
+        let sessionName = "\(safeTitle) — \(dir.lastPathComponent)"
+
+        // 1. Always store in Quill Summary.
+        let quillFolder = notesRoot
+            .appendingPathComponent("Quill Summary", isDirectory: true)
+            .appendingPathComponent(sessionName, isDirectory: true)
+        try? fm.createDirectory(at: quillFolder, withIntermediateDirectories: true)
+        try? fm.copyItem(at: transcriptURL, to: quillFolder.appendingPathComponent("transcript.md"))
+        try? Data(summaryContent.utf8).write(
+            to: quillFolder.appendingPathComponent("summary.md"), options: .atomic
+        )
+        log(dir, "stored in Quill Summary/\(sessionName)")
+
+        // 2. Also categorize into the matched project folder's Meetings/.
         if let folder = result.folder {
-            projectFolder = notesRoot.appendingPathComponent(folder, isDirectory: true)
-        } else {
-            projectFolder = notesRoot.appendingPathComponent("Quill Summary", isDirectory: true)
+            let meetingsFolder = notesRoot
+                .appendingPathComponent(folder, isDirectory: true)
+                .appendingPathComponent("Meetings", isDirectory: true)
+                .appendingPathComponent(sessionName, isDirectory: true)
+            try? fm.createDirectory(at: meetingsFolder, withIntermediateDirectories: true)
+            try? fm.copyItem(at: transcriptURL, to: meetingsFolder.appendingPathComponent("transcript.md"))
+            try? Data(summaryContent.utf8).write(
+                to: meetingsFolder.appendingPathComponent("summary.md"), options: .atomic
+            )
+            log(dir, "categorized to \(folder)/Meetings/\(sessionName)")
         }
 
-        // Always route into a Meetings subfolder.
-        let meetingsFolder = projectFolder.appendingPathComponent("Meetings", isDirectory: true)
-        let fm = FileManager.default
-        try? fm.createDirectory(at: meetingsFolder, withIntermediateDirectories: true)
-
-        // File name: "2026.08.01 — Sprint Planning"
-        let datePrefix = dir.lastPathComponent.prefix(10) // yyyy.MM.dd
-        let safeName = "\(datePrefix) — \(sanitize(result.title))"
-
-        // Copy transcript and summary as separate files.
-        let destTranscript = meetingsFolder.appendingPathComponent("\(safeName) — Transcript.md")
-        let destSummary = meetingsFolder.appendingPathComponent("\(safeName) — Summary.md")
-
-        try? fm.copyItem(at: transcriptURL, to: destTranscript)
-        try? Data(summaryContent.utf8).write(to: destSummary, options: .atomic)
-
-        log(dir, "routed to \(meetingsFolder.path)")
         notifyUser(
             title: "quill — \(result.title)",
-            body: "Filed to \(result.folder ?? "Quill Summary")/Meetings"
+            body: result.folder.map { "Filed to \($0)/Meetings" } ?? "Filed to Quill Summary"
         )
     }
 
