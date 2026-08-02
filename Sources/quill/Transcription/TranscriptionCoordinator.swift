@@ -279,7 +279,7 @@ actor TranscriptionCoordinator {
         if let folder = result.folder {
             projectFolder = notesRoot.appendingPathComponent(folder, isDirectory: true)
         } else {
-            projectFolder = notesRoot.appendingPathComponent("Uncategorized", isDirectory: true)
+            projectFolder = notesRoot.appendingPathComponent("Quill Summary", isDirectory: true)
         }
 
         // Always route into a Meetings subfolder.
@@ -301,7 +301,7 @@ actor TranscriptionCoordinator {
         log(dir, "routed to \(meetingsFolder.path)")
         notifyUser(
             title: "quill — \(result.title)",
-            body: "Filed to \(result.folder ?? "Uncategorized")/Meetings"
+            body: "Filed to \(result.folder ?? "Quill Summary")/Meetings"
         )
     }
 
