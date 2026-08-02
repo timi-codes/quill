@@ -122,15 +122,9 @@ final class MenuBarController {
     }
 
     private static func featherImage(color: NSColor?) -> NSImage? {
-        if let color {
+        if color != nil {
             // Non-template red image for recording state.
-            let hex = String(
-                format: "#%02X%02X%02X",
-                Int(color.redComponent * 255),
-                Int(color.greenComponent * 255),
-                Int(color.blueComponent * 255)
-            )
-            guard let data = featherSVG(color: hex).data(using: .utf8),
+            guard let data = featherSVG(color: "#FF3B30").data(using: .utf8),
                   let image = NSImage(data: data)
             else { return nil }
             image.isTemplate = false

@@ -1,5 +1,6 @@
 import AppKit
 import CoreAudio
+import Darwin
 import Foundation
 
 /// Monitors running applications to detect when a meeting/call app is actively
@@ -22,17 +23,26 @@ final class CallMonitor {
     private var silentSince: Date?
     private let silenceTimeout: TimeInterval
 
-    /// Bundle ID fragments and display-friendly tags for known meeting apps.
-    private static let knownApps: [(bundleFragment: String, nameFragment: String)] = [
-        ("us.zoom.xos", "zoom"),
-        ("com.google.Chrome", "meet"),       // Google Meet runs in browser
-        ("com.apple.Safari", "meet"),
-        ("company.thebrowser.Browser", "meet"), // Arc
-        ("com.microsoft.teams", "teams"),
-        ("com.tinyspeck.slackmacgap", "slack"),
-        ("com.apple.FaceTime", "facetime"),
-        ("com.hnc.Discord", "discord"),
-        ("com.cisco.webexmeetingsapp", "webex"),
+    /// Process path fragments and display-friendly tags for known meeting apps.
+    /// We match against the executable path of audio-producing processes.
+    private static let knownApps: [(pathFragment: String, tag: String)] = [
+        ("zoom.us", "zoom"),
+        ("Microsoft Teams", "teams"),
+        ("Slack", "slack"),
+        ("FaceTime", "facetime"),
+        ("Discord", "discord"),
+        ("Webex", "webex"),
+    ]
+
+    /// Path fragments for browser processes — when any browser helper is
+    /// producing audio and "meet" is configured, we prompt for recording.
+    private static let browserPathFragments: [String] = [
+        "google chrome",
+        "safari",
+        "thebrowser",
+        "brave browser",
+        "microsoft edge",
+        "firefox",
     ]
 
     init() {
@@ -48,6 +58,9 @@ final class CallMonitor {
                 self?.poll(configuredApps: configuredApps)
             }
         }
+        FileHandle.standardError.write(Data(
+            "call monitor active · watching for: \(configuredApps.sorted().joined(separator: ", "))\n".utf8
+        ))
     }
 
     func stop() {
@@ -63,8 +76,6 @@ final class CallMonitor {
 
     /// Called by the AppController when the user dismisses the prompt.
     func userDismissed() {
-        // Don't prompt again for this same call session — reset when the call
-        // actually ends (silence timeout).
         prompted = true
         approved = false
     }
@@ -77,24 +88,30 @@ final class CallMonitor {
     }
 
     private func poll(configuredApps: Set<String>) {
-        let running = NSWorkspace.shared.runningApplications
-        let audioProducers = Self.audioProducingPIDs()
+        // Get process paths for every PID currently producing audio.
+        let audioProcessPaths = Self.audioProducingProcessPaths()
 
-        // Find a running meeting app that is also producing audio.
+        // Match audio-producing process paths against known meeting apps.
         var detected: String? = nil
-        for app in running {
-            guard app.activationPolicy == .regular || app.activationPolicy == .accessory else {
-                continue
-            }
-            let bundleID = app.bundleIdentifier?.lowercased() ?? ""
-            let name = app.localizedName?.lowercased() ?? ""
+        for path in audioProcessPaths {
+            let lower = path.lowercased()
 
+            // Check native meeting apps by path.
             for known in Self.knownApps {
-                let tag = known.nameFragment
-                guard configuredApps.contains(tag) else { continue }
-                if bundleID.contains(known.bundleFragment.lowercased()) || name.contains(tag) {
-                    if audioProducers.contains(app.processIdentifier) {
-                        detected = tag
+                guard configuredApps.contains(known.tag) else { continue }
+                if lower.contains(known.pathFragment.lowercased()) {
+                    detected = known.tag
+                    break
+                }
+            }
+            if detected != nil { break }
+
+            // Check browsers — if any browser helper is producing audio and
+            // "meet" is configured, treat it as a potential call.
+            if configuredApps.contains("meet") {
+                for browser in Self.browserPathFragments {
+                    if lower.contains(browser) {
+                        detected = "meet"
                         break
                     }
                 }
@@ -104,10 +121,8 @@ final class CallMonitor {
 
         if let detected {
             silentSince = nil
-            if activeApp == nil {
+            if activeApp == nil && !prompted {
                 activeApp = detected
-                prompted = false
-                approved = false
                 FileHandle.standardError.write(Data(
                     "call detected: \(detected) — prompting user\n".utf8
                 ))
@@ -131,9 +146,11 @@ final class CallMonitor {
         }
     }
 
-    /// PIDs currently producing audio, queried via the CoreAudio HAL.
-    private static func audioProducingPIDs() -> Set<pid_t> {
-        var pids = Set<pid_t>()
+    /// Returns the executable paths of all processes currently producing audio.
+    /// We resolve PIDs to paths so we can match against app names regardless
+    /// of whether the process is a main app or a helper/renderer subprocess.
+    private static func audioProducingProcessPaths() -> [String] {
+        var paths: [String] = []
 
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
@@ -145,14 +162,14 @@ final class CallMonitor {
         var status = AudioObjectGetPropertyDataSize(
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size
         )
-        guard status == noErr, size > 0 else { return pids }
+        guard status == noErr, size > 0 else { return paths }
 
         let count = Int(size) / MemoryLayout<AudioObjectID>.size
         var objectIDs = [AudioObjectID](repeating: 0, count: count)
         status = AudioObjectGetPropertyData(
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &objectIDs
         )
-        guard status == noErr else { return pids }
+        guard status == noErr else { return paths }
 
         for objectID in objectIDs {
             var pidAddress = AudioObjectPropertyAddress(
@@ -167,6 +184,7 @@ final class CallMonitor {
             )
             guard pidStatus == noErr, pid > 0 else { continue }
 
+            // Check if this process is actively producing audio.
             var isRunning: UInt32 = 0
             var runningAddress = AudioObjectPropertyAddress(
                 mSelector: kAudioProcessPropertyIsRunning,
@@ -177,11 +195,20 @@ final class CallMonitor {
             let runningStatus = AudioObjectGetPropertyData(
                 objectID, &runningAddress, 0, nil, &runningSize, &isRunning
             )
-            if runningStatus == noErr, isRunning != 0 {
-                pids.insert(pid)
+            guard runningStatus == noErr, isRunning != 0 else { continue }
+
+            // Resolve PID to executable path.
+            var pathBuffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+            let pathLen = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
+            if pathLen > 0 {
+                pathBuffer[Int(pathLen)] = 0
+                let path = pathBuffer.withUnsafeBufferPointer { buf in
+                    String(cString: buf.baseAddress!)
+                }
+                paths.append(path)
             }
         }
 
-        return pids
+        return paths
     }
 }
