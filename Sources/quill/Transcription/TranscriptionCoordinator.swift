@@ -290,18 +290,25 @@ actor TranscriptionCoordinator {
         )
         log(dir, "stored in Quill Summary/\(sessionName)")
 
-        // 2. Also categorize into the matched project folder's Meetings/.
+        // 2. Also categorize into the matched project folder's Meetings/
+        //    as a single .md file with the summary and a link to the transcript.
         if let folder = result.folder {
             let meetingsFolder = notesRoot
                 .appendingPathComponent(folder, isDirectory: true)
                 .appendingPathComponent("Meetings", isDirectory: true)
-                .appendingPathComponent(sessionName, isDirectory: true)
             try? fm.createDirectory(at: meetingsFolder, withIntermediateDirectories: true)
-            try? fm.copyItem(at: transcriptURL, to: meetingsFolder.appendingPathComponent("transcript.md"))
-            try? Data(summaryContent.utf8).write(
-                to: meetingsFolder.appendingPathComponent("summary.md"), options: .atomic
-            )
-            log(dir, "categorized to \(folder)/Meetings/\(sessionName)")
+
+            let transcriptLink = "../../../Quill Summary/\(sessionName)/transcript.md"
+            let meetingNote = """
+            # \(result.title)
+
+            > [View full transcript](\(transcriptLink))
+
+            \(result.summary)
+            """
+            let meetingFile = meetingsFolder.appendingPathComponent("\(sessionName).md")
+            try? Data(meetingNote.utf8).write(to: meetingFile, options: .atomic)
+            log(dir, "categorized to \(folder)/Meetings/\(sessionName).md")
         }
 
         notifyUser(
