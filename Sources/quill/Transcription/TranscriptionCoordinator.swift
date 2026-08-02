@@ -283,32 +283,39 @@ actor TranscriptionCoordinator {
         let quillFolder = notesRoot
             .appendingPathComponent("Quill Summary", isDirectory: true)
             .appendingPathComponent(sessionName, isDirectory: true)
-        try? fm.createDirectory(at: quillFolder, withIntermediateDirectories: true)
-        try? fm.copyItem(at: transcriptURL, to: quillFolder.appendingPathComponent("transcript.md"))
-        try? Data(summaryContent.utf8).write(
-            to: quillFolder.appendingPathComponent("summary.md"), options: .atomic
-        )
-        log(dir, "stored in Quill Summary/\(sessionName)")
+        do {
+            try fm.createDirectory(at: quillFolder, withIntermediateDirectories: true)
+            let destTranscript = quillFolder.appendingPathComponent("transcript.md")
+            if !fm.fileExists(atPath: destTranscript.path) {
+                try fm.copyItem(at: transcriptURL, to: destTranscript)
+            }
+            try Data(summaryContent.utf8).write(
+                to: quillFolder.appendingPathComponent("summary.md"), options: .atomic
+            )
+            log(dir, "stored in Quill Summary/\(sessionName)")
+        } catch {
+            log(dir, "failed to write to Quill Summary: \(error)")
+        }
 
         // 2. Also categorize into the matched project folder's Meetings/
         //    as a single .md file with the summary and a link to the transcript.
         if let folder = result.folder {
-            let meetingsFolder = notesRoot
-                .appendingPathComponent(folder, isDirectory: true)
-                .appendingPathComponent("Meetings", isDirectory: true)
-            try? fm.createDirectory(at: meetingsFolder, withIntermediateDirectories: true)
+            do {
+                let meetingsFolder = notesRoot
+                    .appendingPathComponent(folder, isDirectory: true)
+                    .appendingPathComponent("Meetings", isDirectory: true)
+                try fm.createDirectory(at: meetingsFolder, withIntermediateDirectories: true)
 
-            let transcriptLink = "../../../Quill Summary/\(sessionName)/transcript.md"
-            let meetingNote = """
-            # \(result.title)
+                // Build a relative link from Meetings/ to Quill Summary/.
+                let transcriptLink = "../../Quill Summary/\(urlEncode(sessionName))/transcript.md"
+                let meetingNote = "# \(result.title)\n\n> [View full transcript](\(transcriptLink))\n\n\(result.summary)\n"
 
-            > [View full transcript](\(transcriptLink))
-
-            \(result.summary)
-            """
-            let meetingFile = meetingsFolder.appendingPathComponent("\(sessionName).md")
-            try? Data(meetingNote.utf8).write(to: meetingFile, options: .atomic)
-            log(dir, "categorized to \(folder)/Meetings/\(sessionName).md")
+                let meetingFile = meetingsFolder.appendingPathComponent("\(sessionName).md")
+                try Data(meetingNote.utf8).write(to: meetingFile, options: .atomic)
+                log(dir, "categorized to \(folder)/Meetings/\(sessionName).md")
+            } catch {
+                log(dir, "failed to write to \(folder)/Meetings: \(error)")
+            }
         }
 
         notifyUser(
@@ -361,6 +368,11 @@ actor TranscriptionCoordinator {
         ) {
             try? updated.write(to: metaURL, options: .atomic)
         }
+    }
+
+    /// Percent-encode a path component for use in markdown links.
+    private func urlEncode(_ name: String) -> String {
+        name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
     }
 
     /// Strip characters that are problematic in filenames.

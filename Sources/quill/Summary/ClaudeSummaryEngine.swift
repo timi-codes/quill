@@ -7,21 +7,38 @@ struct ClaudeSummaryEngine: SummaryEngine {
         case missingAPIKey
         case requestFailed(Int, String)
         case malformedResponse(String)
+        case allRetriesFailed(Int, last: Error)
 
         var description: String {
             switch self {
             case .missingAPIKey:
                 return "no Claude API key — set summary.api_key in ~/.config/quill/config.json or ANTHROPIC_API_KEY env var"
             case .requestFailed(let status, let body):
-                return "Claude API returned \(status): \(body)"
+                return "Claude API returned \(status): \(String(body.prefix(300)))"
             case .malformedResponse(let detail):
                 return "unexpected Claude API response: \(detail)"
+            case .allRetriesFailed(let attempts, let last):
+                return "Claude API failed after \(attempts) attempts: \(last)"
             }
         }
     }
 
     private let apiKey: String
     private let model: String
+
+    /// Max transcript characters to send. Claude Sonnet handles ~680k chars
+    /// but we cap at 100k to keep costs/latency reasonable.
+    private static let maxTranscriptChars = 100_000
+
+    /// Max context.md characters per folder.
+    private static let maxContextChars = 5_000
+
+    /// HTTP request timeout.
+    private static let requestTimeout: TimeInterval = 120
+
+    /// Retry config for transient failures.
+    private static let maxRetries = 3
+    private static let retryableStatusCodes: Set<Int> = [429, 500, 502, 503, 529]
 
     init() throws {
         guard let key = Config.summaryAPIKey() else {
@@ -35,15 +52,19 @@ struct ClaudeSummaryEngine: SummaryEngine {
         transcript: String,
         folders: [FolderContext]
     ) async throws -> SummaryResult {
+        let truncatedTranscript = String(transcript.prefix(Self.maxTranscriptChars))
+
+        let folderNames = folders.map(\.name)
         let folderDescriptions: String
         if folders.isEmpty {
             folderDescriptions = "No existing folders."
         } else {
             folderDescriptions = folders.map { ctx in
-                if let about = ctx.about {
+                let about = ctx.about.map { String($0.prefix(Self.maxContextChars)) }
+                if let about {
                     return "### \(ctx.name)\n\(about)"
                 } else {
-                    return "### \(ctx.name)\n(no description)"
+                    return "### \(ctx.name)\n(no context.md)"
                 }
             }.joined(separator: "\n\n")
         }
@@ -74,25 +95,73 @@ struct ClaudeSummaryEngine: SummaryEngine {
         - Read each folder's context.md description carefully
         - Match the meeting's content (topics discussed, people mentioned, project context) against the folder descriptions
         - Pick the folder that best matches the meeting's context
+        - The folder value MUST be one of these exact names or null: \(folderNames.map { "\"\($0)\"" }.joined(separator: ", "))
         - Only pick a folder if you are reasonably confident it matches
         - Return null if no folder is a good match
         """
 
         let userMessage = """
         ## Transcript
-        \(transcript)
+        \(truncatedTranscript)
 
         ## Project Folders
         \(folderDescriptions)
         """
 
-        let body = try await callClaude(system: systemPrompt, user: userMessage)
-        return try parse(body)
+        let data = try await callClaudeWithRetry(system: systemPrompt, user: userMessage)
+        let result = try parse(data)
+
+        // Validate folder name against actual folders.
+        if let folder = result.folder, !folderNames.contains(folder) {
+            // Claude returned a folder name that doesn't exist — find closest match.
+            let match = folderNames.first { $0.lowercased() == folder.lowercased() }
+            return SummaryResult(title: result.title, summary: result.summary, folder: match)
+        }
+
+        return result
+    }
+
+    // MARK: - API
+
+    private func callClaudeWithRetry(system: String, user: String) async throws -> Data {
+        var lastError: Error = EngineError.malformedResponse("no attempts made")
+
+        for attempt in 1...Self.maxRetries {
+            do {
+                return try await callClaude(system: system, user: user)
+            } catch let error as EngineError {
+                lastError = error
+                if case .requestFailed(let status, _) = error,
+                   Self.retryableStatusCodes.contains(status) {
+                    let delay = Double(attempt) * 2.0
+                    FileHandle.standardError.write(Data(
+                        "Claude API \(status), retrying in \(Int(delay))s (attempt \(attempt)/\(Self.maxRetries))\n".utf8
+                    ))
+                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    continue
+                }
+                throw error
+            } catch {
+                lastError = error
+                // Network errors are retryable.
+                if attempt < Self.maxRetries {
+                    let delay = Double(attempt) * 2.0
+                    FileHandle.standardError.write(Data(
+                        "Claude API network error, retrying in \(Int(delay))s (attempt \(attempt)/\(Self.maxRetries))\n".utf8
+                    ))
+                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    continue
+                }
+                throw error
+            }
+        }
+
+        throw EngineError.allRetriesFailed(Self.maxRetries, last: lastError)
     }
 
     private func callClaude(system: String, user: String) async throws -> Data {
         let url = URL(string: "https://api.anthropic.com/v1/messages")!
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: Self.requestTimeout)
         request.httpMethod = "POST"
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
@@ -100,7 +169,7 @@ struct ClaudeSummaryEngine: SummaryEngine {
 
         let payload: [String: Any] = [
             "model": model,
-            "max_tokens": 2048,
+            "max_tokens": 4096,
             "system": system,
             "messages": [
                 ["role": "user", "content": user]
@@ -117,6 +186,8 @@ struct ClaudeSummaryEngine: SummaryEngine {
         return data
     }
 
+    // MARK: - Parsing
+
     private func parse(_ data: Data) throws -> SummaryResult {
         guard
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -127,22 +198,38 @@ struct ClaudeSummaryEngine: SummaryEngine {
             throw EngineError.malformedResponse("missing content[0].text")
         }
 
-        // Claude may wrap JSON in markdown fences — strip them.
-        let cleaned = text
-            .replacingOccurrences(of: "```json", with: "")
-            .replacingOccurrences(of: "```", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return try parseJSON(from: text)
+    }
+
+    private func parseJSON(from text: String) throws -> SummaryResult {
+        // Strip markdown fences and any leading/trailing noise.
+        var cleaned = text
+        if let jsonStart = cleaned.firstIndex(of: "{"),
+           let jsonEnd = cleaned.lastIndex(of: "}") {
+            cleaned = String(cleaned[jsonStart...jsonEnd])
+        }
 
         guard
-            let resultData = cleaned.data(using: .utf8),
-            let result = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any],
+            let data = cleaned.data(using: .utf8),
+            let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let title = result["title"] as? String,
             let summary = result["summary"] as? String
         else {
-            throw EngineError.malformedResponse("couldn't parse JSON from: \(text.prefix(200))")
+            throw EngineError.malformedResponse("couldn't parse JSON from: \(String(text.prefix(300)))")
         }
 
-        let folder = result["folder"] as? String
-        return SummaryResult(title: title, summary: summary, folder: folder)
+        // Handle folder being NSNull, empty string, or "null" string.
+        let folder: String?
+        if let f = result["folder"] as? String, !f.isEmpty, f.lowercased() != "null" {
+            folder = f
+        } else {
+            folder = nil
+        }
+
+        return SummaryResult(
+            title: String(title.prefix(80)),
+            summary: summary,
+            folder: folder
+        )
     }
 }
