@@ -14,7 +14,7 @@ final class MenuBarController {
 
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
-    var onQuit: (() -> Void)?
+    var onRestart: (() -> Void)?
 
     init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -49,17 +49,17 @@ final class MenuBarController {
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(
-            title: "Quit quill",
-            action: #selector(quitClicked),
+        let restart = NSMenuItem(
+            title: "Restart quill",
+            action: #selector(restartClicked),
             keyEquivalent: "q"
         )
-        menu.addItem(quit)
+        menu.addItem(restart)
 
         idleImage = Self.featherImage(color: nil)
         recordingImage = Self.featherImage(color: .systemRed)
 
-        for item in [toggleItem, openFolder, quit] {
+        for item in [toggleItem, openFolder, restart] {
             item.target = self
         }
 
@@ -143,5 +143,5 @@ final class MenuBarController {
 
     @objc private func toggleClicked() { onToggle?() }
     @objc private func openFolderClicked() { onOpenFolder?() }
-    @objc private func quitClicked() { onQuit?() }
+    @objc private func restartClicked() { onRestart?() }
 }

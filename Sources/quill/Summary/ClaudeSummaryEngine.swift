@@ -33,20 +33,29 @@ struct ClaudeSummaryEngine: SummaryEngine {
 
     func process(
         transcript: String,
-        existingFolders: [String]
+        folders: [FolderContext]
     ) async throws -> SummaryResult {
-        let folderList = existingFolders.isEmpty
-            ? "No existing folders."
-            : existingFolders.map { "- \($0)" }.joined(separator: "\n")
+        let folderDescriptions: String
+        if folders.isEmpty {
+            folderDescriptions = "No existing folders."
+        } else {
+            folderDescriptions = folders.map { ctx in
+                if let about = ctx.about {
+                    return "### \(ctx.name)\n\(about)"
+                } else {
+                    return "### \(ctx.name)\n(no description)"
+                }
+            }.joined(separator: "\n\n")
+        }
 
         let systemPrompt = """
-        You are an assistant that processes meeting transcripts. You will be given a transcript and a list of existing folder names.
+        You are an assistant that processes meeting transcripts. You will be given a transcript and a list of project/context folders with their descriptions (from about.md files).
 
         Respond with ONLY valid JSON (no markdown fences, no extra text) in this exact format:
         {
           "title": "short descriptive title for the meeting (under 60 chars)",
           "summary": "markdown summary with key points, decisions, and action items",
-          "folder": "best matching folder name from the list, or null if none match"
+          "folder": "exact folder name from the list, or null if none match"
         }
 
         Rules for the title:
@@ -58,9 +67,12 @@ struct ClaudeSummaryEngine: SummaryEngine {
         - Use markdown with headers: ## Key Points, ## Decisions, ## Action Items
         - Be concise but capture all important information
         - Use bullet points
+        - Use the project context from the about.md to write a more informed and relevant summary — reference project-specific terminology, goals, and people where appropriate
 
         Rules for folder classification:
-        - Pick the folder that best matches the meeting's context (company, project, institution)
+        - Read each folder's about.md description carefully
+        - Match the meeting's content (topics discussed, people mentioned, project context) against the folder descriptions
+        - Pick the folder that best matches the meeting's context
         - Only pick a folder if you are reasonably confident it matches
         - Return null if no folder is a good match
         """
@@ -69,8 +81,8 @@ struct ClaudeSummaryEngine: SummaryEngine {
         ## Transcript
         \(transcript)
 
-        ## Existing Folders
-        \(folderList)
+        ## Project Folders
+        \(folderDescriptions)
         """
 
         let body = try await callClaude(system: systemPrompt, user: userMessage)

@@ -89,7 +89,7 @@ final class AppController {
         self.root = root
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
-        menuBar.onQuit = { [weak self] in self?.shutdown() }
+        menuBar.onRestart = { [weak self] in self?.restart() }
         menuBar.update(recording: false, elapsed: nil)
 
         callMonitor.onCallDetected = { [weak self] app in
@@ -116,6 +116,18 @@ final class AppController {
     func shutdown() {
         callMonitor.stop()
         stopSession()
+        NSApp.terminate(nil)
+    }
+
+    /// Restart quill by re-launching the binary and then exiting.
+    func restart() {
+        callMonitor.stop()
+        stopSession()
+        let executableURL = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
+        let task = Process()
+        task.executableURL = executableURL
+        task.arguments = Array(ProcessInfo.processInfo.arguments.dropFirst())
+        try? task.run()
         NSApp.terminate(nil)
     }
 

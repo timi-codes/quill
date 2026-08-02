@@ -245,8 +245,8 @@ actor TranscriptionCoordinator {
             return
         }
 
-        // Discover existing folders in the notes directory.
-        let existingFolders = listNotesFolders()
+        // Discover existing folders and read their about.md for context.
+        let folderContexts = loadFolderContexts()
 
         // Run AI.
         let result: SummaryResult
@@ -254,7 +254,7 @@ actor TranscriptionCoordinator {
             let engine = try prepareSummaryEngine()
             result = try await engine.process(
                 transcript: transcript,
-                existingFolders: existingFolders
+                folders: folderContexts
             )
             log(dir, "summary generated — title: \(result.title), folder: \(result.folder ?? "none")")
         } catch {
@@ -275,31 +275,33 @@ actor TranscriptionCoordinator {
 
         // Route files to notes directory if configured.
         guard let notesRoot = Config.notesDir() else { return }
-        let targetFolder: URL
+        let projectFolder: URL
         if let folder = result.folder {
-            targetFolder = notesRoot.appendingPathComponent(folder, isDirectory: true)
+            projectFolder = notesRoot.appendingPathComponent(folder, isDirectory: true)
         } else {
-            targetFolder = notesRoot.appendingPathComponent("Uncategorized", isDirectory: true)
+            projectFolder = notesRoot.appendingPathComponent("Uncategorized", isDirectory: true)
         }
 
+        // Always route into a Meetings subfolder.
+        let meetingsFolder = projectFolder.appendingPathComponent("Meetings", isDirectory: true)
         let fm = FileManager.default
-        try? fm.createDirectory(at: targetFolder, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: meetingsFolder, withIntermediateDirectories: true)
 
         // File name: "2026.08.01 — Sprint Planning"
         let datePrefix = dir.lastPathComponent.prefix(10) // yyyy.MM.dd
         let safeName = "\(datePrefix) — \(sanitize(result.title))"
 
         // Copy transcript and summary as separate files.
-        let destTranscript = targetFolder.appendingPathComponent("\(safeName) — Transcript.md")
-        let destSummary = targetFolder.appendingPathComponent("\(safeName) — Summary.md")
+        let destTranscript = meetingsFolder.appendingPathComponent("\(safeName) — Transcript.md")
+        let destSummary = meetingsFolder.appendingPathComponent("\(safeName) — Summary.md")
 
         try? fm.copyItem(at: transcriptURL, to: destTranscript)
         try? Data(summaryContent.utf8).write(to: destSummary, options: .atomic)
 
-        log(dir, "routed to \(targetFolder.path)")
+        log(dir, "routed to \(meetingsFolder.path)")
         notifyUser(
             title: "quill — \(result.title)",
-            body: "Filed to \(result.folder ?? "Uncategorized")"
+            body: "Filed to \(result.folder ?? "Uncategorized")/Meetings"
         )
     }
 
@@ -310,7 +312,8 @@ actor TranscriptionCoordinator {
         return engine
     }
 
-    private func listNotesFolders() -> [String] {
+    /// Load folder names and their about.md contents from the notes directory.
+    private func loadFolderContexts() -> [FolderContext] {
         guard let notesRoot = Config.notesDir() else { return [] }
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
@@ -323,9 +326,14 @@ actor TranscriptionCoordinator {
                 return nil
             }
             let name = url.lastPathComponent
-            // Skip hidden folders and Uncategorized (our own fallback).
-            return name.hasPrefix(".") ? nil : name
-        }.sorted()
+            guard !name.hasPrefix(".") else { return nil }
+
+            // Read about.md if it exists.
+            let aboutURL = url.appendingPathComponent("about.md")
+            let about = try? String(contentsOf: aboutURL, encoding: .utf8)
+
+            return FolderContext(name: name, about: about)
+        }.sorted { $0.name < $1.name }
     }
 
     private func updateMetaTitle(dir: URL, title: String) {

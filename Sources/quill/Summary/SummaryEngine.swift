@@ -10,11 +10,17 @@ struct SummaryResult: Sendable {
     let folder: String?
 }
 
+/// Context about a project folder: its name and the contents of its about.md.
+struct FolderContext: Sendable {
+    let name: String
+    let about: String?
+}
+
 /// An engine that takes a transcript and produces a title + summary + folder
 /// classification.
 protocol SummaryEngine: Sendable {
     func process(
         transcript: String,
-        existingFolders: [String]
+        folders: [FolderContext]
     ) async throws -> SummaryResult
 }
