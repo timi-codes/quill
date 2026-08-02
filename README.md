@@ -2,9 +2,9 @@
 
 A minimal macOS meeting recorder + transcriber + summarizer. One menu-bar
 click records your mic and all system audio as two separate tracks; when you
-stop, quill transcribes both on-device, generates an AI summary with a title,
-and routes the notes to the right folder. It can also auto-detect calls and
-prompt you to record.
+stop, quill transcribes both on-device with speaker diarization, generates an
+AI summary with a title, and routes the notes to the right project folder. It
+can also auto-detect calls and prompt you to record.
 
 Named for the feather. Sibling of [parrot](https://github.com/digimata/parrot), same skeleton: single
 Swift binary, menu-bar tray, no app bundle.
@@ -27,8 +27,7 @@ transcription speed.
 1. **Run it** (`quill` in a terminal, or the LaunchAgent).
 2. **Click the feather in the menu bar → Start recording.** First use prompts
    for microphone and System Audio Recording permissions. While recording, the
-   icon turns red with a running elapsed counter, and macOS shows the purple
-   recording indicator.
+   feather turns red with a live elapsed timer in the menu bar.
 3. **Click → Stop recording** when the meeting ends. Transcription starts
    automatically (the menu shows progress); a notification fires when the
    transcript is ready.
@@ -39,7 +38,7 @@ Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 |---|---|
 | `mic.caf` | your side (default input device, AAC) |
 | `system.caf` | everything the Mac played — the other side of the call (AAC) |
-| `meta.json` | start/end timestamps, duration, per-track start offsets |
+| `meta.json` | start/end timestamps, duration, per-track start offsets, title |
 | `transcript.json` | canonical transcript — engine provenance + timed, speaker-tagged segments |
 | `transcript.md` | the same transcript rendered for reading |
 | `summary.md` | AI-generated title, key points, decisions, and action items |
@@ -70,6 +69,18 @@ on next launch (the filesystem is the queue: a session with `meta.json` but no
 The engine sits behind a small protocol; a Whisper engine (WhisperKit
 large-v3-turbo) is planned as the fallback / re-transcription option.
 
+## Speaker diarization
+
+After transcription, quill runs **offline speaker diarization** on each audio
+track using FluidAudio's Pyannote + WeSpeaker VBx pipeline (~100 MB models,
+auto-downloaded on first use). This identifies individual speakers within each
+track — so if the other person's voice bleeds into your mic, they still get
+labelled separately instead of everything showing as "me".
+
+The dominant speaker in the mic track becomes "me", others become "Speaker 2",
+etc. Diarization falls back gracefully to the original me/them labels if it
+produces no results.
+
 ## Summary & folder routing
 
 When enabled, quill sends the finished transcript to the **Claude API** to
@@ -77,30 +88,52 @@ generate:
 
 - **Title** — a short descriptive name for the call
 - **Summary** — key points, decisions, and action items in markdown
-- **Folder classification** — which subfolder in your notes directory the call
-  belongs to, matched against existing folder names (projects, companies, etc.)
+- **Folder classification** — which project folder the call belongs to
 
-The transcript and summary are written as separate files into the matched
-subfolder. If no folder matches, they land in `Uncategorized/`. Point
-`notes_dir` at a folder that syncs to Google Drive (or Dropbox, iCloud, etc.)
-and your meeting notes are automatically available everywhere.
+### How classification works
 
-Output in the notes folder:
+Each subfolder in your `notes_dir` can contain a `context.md` file describing
+the project — what it's about, who's involved, goals, terminology. quill
+reads every `context.md` and sends them alongside the transcript so Claude can:
+
+1. **Classify** the meeting into the right project folder
+2. **Write a better summary** using project-specific context
+3. **Correct misspelled names** from speech-to-text by cross-referencing
+   people listed in `context.md`
+
+### Output structure
+
+All meetings are archived in `Quill Summary/` with full transcript and
+summary. Categorized meetings also get a single summary `.md` file in the
+project's `Meetings/` folder with a link back to the full transcript.
 
 ```
-~/Desktop/Notes/Acme Corp/2026.08.01 — Sprint Planning — Transcript.md
-~/Desktop/Notes/Acme Corp/2026.08.01 — Sprint Planning — Summary.md
+~/Documents/Notes/
+├── Quill Summary/                                    ← all meetings archived here
+│   └── Sprint Planning — 2026.08.01-1935/
+│       ├── transcript.md
+│       └── summary.md
+├── Beyond The Grade/                                 ← project folder
+│   ├── context.md                                    ← project description for AI
+│   └── Meetings/
+│       └── Sprint Planning — 2026.08.01-1935.md      ← summary + transcript link
+└── ...
 ```
+
+The summary engine retries on transient API failures (429, 5xx) with
+exponential backoff, validates folder names against actual folders, and
+truncates long transcripts to stay within token limits.
 
 ## Auto-detect calls
 
-quill can watch for active meeting apps and prompt you to record when a call
-starts. When enabled, it polls for apps like **Zoom**, **Google Meet**,
-**Microsoft Teams**, **Slack**, **FaceTime**, **Discord**, and **Webex** that
-are actively producing audio.
+quill watches for active meeting apps and prompts you to record when a call
+starts. It detects **Zoom**, **Google Meet** (Chrome, Safari, Arc, Brave,
+Edge, Firefox), **Microsoft Teams**, **Slack**, **FaceTime**, **Discord**, and
+**Webex** by monitoring which processes are actively producing audio via
+CoreAudio.
 
 When a call is detected, a confirmation dialog appears: *"Call detected —
-Zoom. Start recording?"* with Record and Dismiss buttons. The dialog
+Meet. Start recording?"* with Record and Dismiss buttons. The dialog
 auto-dismisses after 10 seconds if you don't respond. If you approve,
 recording starts immediately and auto-stops when the call goes silent for the
 configured timeout (default 30 seconds).
@@ -112,25 +145,25 @@ Optional, at `~/.config/quill/config.json`:
 ```json
 {
   "recordings_dir": "~/Recordings",
-  "notes_dir": "~/Desktop/Notes",
+  "notes_dir": "~/Documents/Notes",
   "transcription": { "enabled": true, "engine": "parakeet" },
-  "summary": { "enabled": true, "api_key": "sk-ant-...", "model": "claude-sonnet-4-20250514" },
-  "auto_record": { "enabled": true, "apps": ["zoom", "meet", "teams"], "silence_timeout_s": 30 },
+  "summary": { "enabled": true, "api_key": "sk-ant-..." },
+  "auto_record": { "enabled": true },
   "on_stop": "my-hook"
 }
 ```
 
 - `recordings_dir` — where sessions land. Resolution order: `--out` flag >
   config > `~/Recordings`.
-- `notes_dir` — directory containing subfolders for projects/companies.
-  Transcripts and summaries are routed here after AI classification. Point it
-  at a Google Drive / Dropbox sync folder for automatic cloud access.
+- `notes_dir` — directory containing project subfolders with `context.md`
+  files. Transcripts and summaries are routed here after AI classification.
+  Point it at a Google Drive / Dropbox sync folder for automatic cloud access.
 - `transcription.enabled` — set `false` to just record.
 - `summary.enabled` — generate AI title + summary after transcription (default
   off). Requires an API key.
 - `summary.api_key` — Claude API key. Also reads from `ANTHROPIC_API_KEY` env
   var.
-- `summary.model` — Claude model to use (default `claude-sonnet-4-20250514`).
+- `summary.model` — Claude model to use (default `claude-sonnet-4-6`).
 - `auto_record.enabled` — watch for meeting apps and prompt to record (default
   off).
 - `auto_record.apps` — which apps to watch. Default:
@@ -165,6 +198,7 @@ quill install --uninstall
 - **AVAudioEngine** — mic capture
 - **AVAudioFile** — streaming AAC encode into CAF
 - **FluidAudio / Parakeet** — on-device Core ML transcription
+- **FluidAudio / Pyannote + WeSpeaker** — on-device speaker diarization
 - **Claude API** — AI-powered summary, title generation, and folder classification
 - **NSStatusItem** — the whole UI
 
