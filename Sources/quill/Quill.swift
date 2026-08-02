@@ -89,6 +89,7 @@ final class AppController {
         self.root = root
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
+        menuBar.onOpenNotes = { Self.openNotes() }
         menuBar.onRestart = { [weak self] in self?.restart() }
         menuBar.update(recording: false, elapsed: nil)
 
@@ -242,6 +243,12 @@ final class AppController {
         else { return nil }
         image.size = NSSize(width: 64, height: 64)
         return image
+    }
+
+    private static func openNotes() {
+        guard let notesDir = Config.notesDir() else { return }
+        try? FileManager.default.createDirectory(at: notesDir, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(notesDir)
     }
 
     private func openFolder() {

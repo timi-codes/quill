@@ -14,6 +14,7 @@ final class MenuBarController {
 
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
+    var onOpenNotes: (() -> Void)?
     var onRestart: (() -> Void)?
 
     init() {
@@ -47,6 +48,13 @@ final class MenuBarController {
         )
         menu.addItem(openFolder)
 
+        let openNotes = NSMenuItem(
+            title: "Open notes folder",
+            action: #selector(openNotesClicked),
+            keyEquivalent: "n"
+        )
+        menu.addItem(openNotes)
+
         menu.addItem(.separator())
 
         let restart = NSMenuItem(
@@ -59,7 +67,7 @@ final class MenuBarController {
         idleImage = Self.featherImage(color: nil)
         recordingImage = Self.featherImage(color: .systemRed)
 
-        for item in [toggleItem, openFolder, restart] {
+        for item in [toggleItem, openFolder, openNotes, restart] {
             item.target = self
         }
 
@@ -143,5 +151,6 @@ final class MenuBarController {
 
     @objc private func toggleClicked() { onToggle?() }
     @objc private func openFolderClicked() { onOpenFolder?() }
+    @objc private func openNotesClicked() { onOpenNotes?() }
     @objc private func restartClicked() { onRestart?() }
 }
