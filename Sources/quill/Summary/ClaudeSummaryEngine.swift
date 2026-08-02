@@ -68,6 +68,7 @@ struct ClaudeSummaryEngine: SummaryEngine {
         - Be concise but capture all important information
         - Use bullet points
         - Use the project context from the context.md to write a more informed and relevant summary — reference project-specific terminology, goals, and people where appropriate
+        - IMPORTANT: The transcript comes from speech-to-text and often misspells names. Cross-reference names in the transcript against the people listed in context.md and use the correct spelling. For example, if context.md lists "Irede Adekunle" and the transcript says "IREDI" or "Irede" or similar, always use "Irede" in the summary.
 
         Rules for folder classification:
         - Read each folder's context.md description carefully
