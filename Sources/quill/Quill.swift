@@ -188,6 +188,9 @@ final class AppController {
         alert.messageText = "Call detected — \(displayName)"
         alert.informativeText = "quill detected an active \(displayName) call. Start recording?"
         alert.alertStyle = .informational
+        if let icon = Self.alertIcon() {
+            alert.icon = icon
+        }
         alert.addButton(withTitle: "Record")
         alert.addButton(withTitle: "Dismiss")
 
@@ -210,6 +213,23 @@ final class AppController {
         } else {
             callMonitor.userDismissed()
         }
+    }
+
+    private static func alertIcon() -> NSImage? {
+        let svg = """
+        <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" \
+        viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="1.5" \
+        stroke-linecap="round" stroke-linejoin="round">\
+        <path d="M12.67 19a2 2 0 0 0 1.416-.588l6.154-6.172a6 6 0 0 0-8.49-8.49L5.586 9.914A2 2 0 0 0 5 11.328V18a1 1 0 0 0 1 1z"/>\
+        <path d="M16 8 2 22"/>\
+        <path d="M17.5 15H9"/>\
+        </svg>
+        """
+        guard let data = svg.data(using: .utf8),
+              let image = NSImage(data: data)
+        else { return nil }
+        image.size = NSSize(width: 64, height: 64)
+        return image
     }
 
     private func openFolder() {
